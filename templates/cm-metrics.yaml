@@ -1,0 +1,99 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-fluentbit
+  labels:
+    {{- include "nginx-app.labels" . | nindent 4 }}
+data:
+  # Configuration files: server, input, filters and output
+  # ======================================================
+  parsers-custom.conf: |
+    [PARSER]
+        Name crijson
+        Format regex
+        Regex ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<capjson>.*)$
+        Decode_Field json capjson
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%z
+        Time_Keep   On
+    [PARSER]
+        Name   json
+        Format json
+        Time_Key time
+        Time_Format %Y-%m-%dT%H:%M:%S.%z
+
+  fluent-bit.conf: |
+    [SERVICE]
+        Daemon Off
+        Flush 1
+        Log_Level info
+        HTTP_Server Off
+        Parsers_File /fluent-bit/etc/conf/parsers-custom.conf
+        Health_Check On
+
+    [INPUT]
+        Name tail
+        Path /var/log/containers/${HOSTNAME}_{{ tpl .Release.Namespace . }}_{{ tpl .Chart.Name . }}*.log
+        Parser crijson
+        Tag container_logs
+    
+    [FILTER]
+        name   grep
+        match  container_logs
+        regex  level ^info$
+
+    # Passing values above than 60s from duration_msecs to different metric
+    [FILTER]
+        Name      type_converter
+        Match     container_logs
+        uint_key  $duration_msecs response_latency string
+    [FILTER]
+        Name          rewrite_tag
+        Match         container_logs
+        Rule          $response_latency \b6[0-9][0-9][0-9][0-9]\b continer_timeouts true
+        Emitter_Name  re_emitted_timeouts
+
+    # Appending logs with lua
+    [FILTER]
+        name   lua
+        match  continer_timeouts*
+        call   append_logs
+        code   function append_logs(tag, timestamp, record)  record.timeout = "true"; return 1, timestamp, record end
+    [FILTER]
+        name   lua
+        match  container_logs
+        call   append_logs
+        code   function append_logs(tag, timestamp, record)  record.timeout = "false"; return 1, timestamp, record end
+
+    # Passing logs to metrics        
+    [FILTER]
+        name               log_to_metrics
+        match              container_logs
+        tag                test_metric
+        metric_mode        counter
+        metric_name        test_metric
+        metric_description This metric counts valid app requests
+        add_label          code $status
+        add_label          remote_ip $request['remote_ip']    
+        add_label          uri $request['uri']
+        add_label          host $request['host']
+        label_field        timeout
+
+    [FILTER]
+        name               log_to_metrics
+        match              container_timeouts
+        tag                test_metric
+        metric_mode        counter
+        metric_name        test_metric_timeout
+        metric_description This metric counts valid app requests
+        add_label          code $status
+        add_label          remote_ip $request['remote_ip']    
+        add_label          uri $request['uri']
+        add_label          host $request['host']
+        label_field        timeout
+
+    [OUTPUT]
+        name               prometheus_exporter
+        match              *
+        host               0.0.0.0
+        port               2020
