@@ -1,5 +1,7 @@
 replicaCount: 1
-confmount: /etc/nginx/conf.d
+appvolumemount:
+  - name: config-volume
+    mountPath: /etc/nginx/conf.d
 image:
   repository: nginx
   pullPolicy: IfNotPresent
