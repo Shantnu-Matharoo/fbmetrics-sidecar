@@ -70,7 +70,7 @@ sidecarContainers:
       - '--config=/fluent-bit/etc/conf/fluent-bit.conf'
     command:
       - /fluent-bit/bin/fluent-bit
-    image: cr.fluentbit.io/fluent/fluent-bit:3.0.7-debug
+    image: cr.fluentbit.io/fluent/fluent-bit:3.1.7-debug
     imagePullPolicy: IfNotPresent
     ports:
       - name: http-fbit

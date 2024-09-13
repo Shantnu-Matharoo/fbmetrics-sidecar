@@ -50,7 +50,7 @@ data:
     [FILTER]
         Name          rewrite_tag
         Match         container_logs
-        Rule          $response_latency \b6[0-9][0-9][0-9][0-9]\b continer_timeouts true
+        Rule          $response_latency \b6[0-9][0-9][0-9][0-9]\b continer_timeouts false
         Emitter_Name  re_emitted_timeouts
 
     # Appending logs with lua
