@@ -1,0 +1,318 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  labels:
+    helm.sh/chart: nginx-app-0.1.0
+    app.kubernetes.io/name: nginx-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  nginx.conf: |
+    log_format main_json escape=json '{'
+        '"level":"info",'
+        '"ts": "$time_iso8601",'
+        '"message": "handled request $request_method $request_uri",'
+        '"request": {'
+            '"id": "$http_x_request_id",'
+            '"remote_ip": "$remote_addr",'
+            '"remote_port": "$remote_port",'
+            '"protocol": "$server_protocol",'
+            '"method": "$request_method",'
+            '"host": "$host",'
+            '"uri": "$request_uri",'
+            '"headers": {'
+                '"user-agent": "$http_user_agent",'
+                '"accept": "$http_accept",'
+                '"accept-encoding": "$http_accept_encoding",'
+                '"traceparent": "$http_traceparent",'
+                '"tracestate": "$http_tracestate"'
+            '}'
+        '},'
+        '"bytes_read": $request_length,'
+        '"duration_msecs": $request_time,'
+        '"size": $bytes_sent,'
+        '"status": $status,'
+        '"resp_headers": {'
+          '"content_length": "$sent_http_content_length",'
+          '"content_type": "$sent_http_content_type"'
+        '}'
+    '}';
+    server {
+        listen       80;
+        listen  [::]:80;
+        server_name  localhost;
+        access_log  /dev/stdout  main_json;
+        location / {
+            root   /usr/share/nginx/html;
+            index  index.html index.htm;
+        }
+        error_page   500 502 503 504  /50x.html;
+        location = /50x.html {
+            root   /usr/share/nginx/html;
+        }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-fluentbit
+  labels:
+    helm.sh/chart: nginx-app-0.1.0
+    app.kubernetes.io/name: nginx-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  # Configuration files: server, input, filters and output
+  # ======================================================
+  parsers-custom.conf: |
+    [PARSER]
+        Name crijson
+        Format regex
+        Regex ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<capjson>.*)$
+        Decode_Field json capjson
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%z
+        Time_Keep   On
+    [PARSER]
+        Name   json
+        Format json
+        Time_Key time
+        Time_Format %Y-%m-%dT%H:%M:%S.%z
+
+  fluent-bit.conf: |
+    [SERVICE]
+        Daemon Off
+        Flush 1
+        Log_Level info
+        HTTP_Server Off
+        Parsers_File /fluent-bit/etc/conf/parsers-custom.conf
+        Health_Check On
+
+    [INPUT]
+        Name tail
+        Path /var/log/containers/${HOSTNAME}_app_nginx-app*.log
+        Parser crijson
+        Tag container_logs
+    
+    [FILTER]
+        name   grep
+        match  container_logs
+        regex  level ^info$
+
+    # Passing values above than 60s from duration_msecs to different metric
+    [FILTER]
+        Name      type_converter
+        Match     container_logs
+        uint_key  $duration_msecs response_latency string
+    [FILTER]
+        Name          rewrite_tag
+        Match         container_logs
+        Rule          $response_latency \b6[0-9][0-9][0-9][0-9]\b continer_timeouts false
+        Emitter_Name  re_emitted_timeouts
+
+    # Appending logs with lua
+    [FILTER]
+        name   lua
+        match  continer_timeouts*
+        call   append_logs
+        code   function append_logs(tag, timestamp, record)  record.timeout = "true"; return 1, timestamp, record end
+    [FILTER]
+        name   lua
+        match  container_logs
+        call   append_logs
+        code   function append_logs(tag, timestamp, record)  record.timeout = "false"; return 1, timestamp, record end
+
+    # Passing logs to metrics        
+    [FILTER]
+        name               log_to_metrics
+        match              container_logs
+        tag                test_metric
+        metric_mode        counter
+        metric_name        test_metric
+        metric_description This metric counts valid app requests
+        add_label          code $status
+        add_label          remote_ip $request['remote_ip']    
+        add_label          uri $request['uri']
+        add_label          host $request['host']
+        label_field        timeout
+
+    [FILTER]
+        name               log_to_metrics
+        match              container_timeouts
+        tag                test_metric
+        metric_mode        counter
+        metric_name        test_metric_timeout
+        metric_description This metric counts valid app requests
+        add_label          code $status
+        add_label          remote_ip $request['remote_ip']    
+        add_label          uri $request['uri']
+        add_label          host $request['host']
+        label_field        timeout
+
+    [OUTPUT]
+        name               prometheus_exporter
+        match              *
+        host               0.0.0.0
+        port               2020
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-nginx-app
+  labels:
+    helm.sh/chart: nginx-app-0.1.0
+    app.kubernetes.io/name: nginx-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: nginx-app
+    app.kubernetes.io/instance: app
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-nginx-app-metrics
+  labels:
+    helm.sh/chart: nginx-app-0.1.0
+    app.kubernetes.io/name: nginx-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 2020
+      protocol: TCP
+      name: http-metrics
+  selector:
+    app.kubernetes.io/name: nginx-app
+    app.kubernetes.io/instance: app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-nginx-app
+  labels:
+    helm.sh/chart: nginx-app-0.1.0
+    app.kubernetes.io/name: nginx-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx-app
+      app.kubernetes.io/instance: app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nginx-app
+        app.kubernetes.io/instance: app
+    spec:
+      serviceAccountName: default
+      securityContext:
+        {}
+      containers:
+        - args:
+          - --workdir=/fluent-bit/etc
+          - --config=/fluent-bit/etc/conf/fluent-bit.conf
+          command:
+          - /fluent-bit/bin/fluent-bit
+          image: cr.fluentbit.io/fluent/fluent-bit:3.1.7-debug
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /
+              port: http-fbit
+              scheme: HTTP
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          name: fbit-exporter
+          ports:
+          - containerPort: 2020
+            name: http-fbit
+            protocol: TCP
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /api/v1/health
+              port: http-fbit
+              scheme: HTTP
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+          - mountPath: /fluent-bit/etc/conf
+            name: config-fluentbit
+          - mountPath: /var/log
+            name: varlog
+          - mountPath: /var/lib/docker/containers
+            name: varlibdockercontainers
+            readOnly: true
+        - name: nginx-app
+          securityContext:
+            {}
+          image: "nginx:1.16.0"
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - mountPath: /etc/nginx/conf.d
+              name: config-volume
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+      volumes:
+      - configMap:
+          name: config-fluentbit
+        name: config-fluentbit
+      - hostPath:
+          path: /var/log
+          type: ""
+        name: varlog
+        readOnly: true
+      - hostPath:
+          path: /var/lib/docker/containers
+          type: ""
+        name: varlibdockercontainers
+        readOnly: true
+      - configMap:
+          name: app-config
+        name: config-volume
