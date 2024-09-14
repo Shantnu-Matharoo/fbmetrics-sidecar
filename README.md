@@ -2,7 +2,7 @@
 
 ## Assumptions
 
-1. This tutorial only applies to Linux nodes and assumes you’re familiar with Kubernetes & Helm charts
+1. This repo only applies to Linux nodes and assumes you’re familiar with Kubernetes & Helm charts
 2. The application logs are assumed to be in JSON for simpler parsing.
 
 ## Fluent Bit Configuration
