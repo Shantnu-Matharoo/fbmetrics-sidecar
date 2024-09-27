@@ -14,21 +14,22 @@ data:
         Regex ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<capjson>.*)$
         Decode_Field json capjson
         Time_Key    time
-        Time_Format %Y-%m-%dT%H:%M:%S.%z
-        Time_Keep   On
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
     [PARSER]
         Name   json
         Format json
         Time_Key time
-        Time_Format %Y-%m-%dT%H:%M:%S.%z
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep    On
 
   fluent-bit.conf: |
     [SERVICE]
         Daemon Off
         Flush 1
-        Log_Level info
+        Log_Level debug
         HTTP_Server Off
         Parsers_File /fluent-bit/etc/conf/parsers-custom.conf
+        Parsers_File /fluent-bit/etc/parsers.conf
         Health_Check On
 
     [INPUT]
@@ -36,6 +37,7 @@ data:
         Path /var/log/containers/${HOSTNAME}_{{ tpl .Release.Namespace . }}_{{ tpl .Chart.Name . }}*.log
         Parser crijson
         Tag container_logs
+        Buffer_Max_Size  5MB
     
     [FILTER]
         name   grep
@@ -46,7 +48,7 @@ data:
     [FILTER]
         Name      type_converter
         Match     container_logs
-        uint_key  $duration_msecs response_latency string
+        float_key  $duration_msecs response_latency string
     [FILTER]
         Name          rewrite_tag
         Match         container_logs
@@ -69,7 +71,7 @@ data:
     [FILTER]
         name               log_to_metrics
         match              container_logs
-        tag                test_metric
+        tag                test_metric1
         metric_mode        counter
         metric_name        test_metric
         metric_description This metric counts valid app requests
@@ -97,3 +99,6 @@ data:
         match              *
         host               0.0.0.0
         port               2020
+    [Output]
+        Name    stdout
+        Match   *
